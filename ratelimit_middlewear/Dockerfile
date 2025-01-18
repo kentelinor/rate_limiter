@@ -18,4 +18,4 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 
 # Command to run the FastAPI application with Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

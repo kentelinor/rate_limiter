@@ -8,94 +8,61 @@ import pickle
 app = FastAPI()
 
 # Initialize Redis connection (make sure Redis is running on localhost:6379)
-r = redis.StrictRedis(host='localhost', port=6379, db=0, decode_responses=False)
+r = redis.StrictRedis(host='redis', port=6379, db=0, decode_responses=False)
 
-class Node:
-    def __init__(self, value):
-        self.value = value
-        self.next = None
 
-    def to_dict(self):
-        return {
-            'value': self.value.isoformat(),  # store datetime as string
-            'next': None  # 'next' can be handled via linked list in Redis
-        }
+class RateLimiterRedis:
+    def __init__(self, redis_client, max_posts, seconds, key="ratelimiter"):
+        """
+        Initialize the Redis-based rate limiter.
 
-    @staticmethod
-    def from_dict(data):
-        node = Node(datetime.datetime.fromisoformat(data['value']))
-        # Handle 'next' in linked list structure within Redis
-        return node
-
-class RateLimiter:
-    def __init__(self, max_posts, seconds, redis_client):
+        :param redis_client: Redis connection object.
+        :param max_posts: Maximum allowed requests within the time window.
+        :param seconds: Time window in seconds.
+        :param key: Redis key for storing request timestamps.
+        """
+        self.redis_client = redis_client
         self.max_posts = max_posts
         self.seconds = seconds
-        self.redis = redis_client
-        self.size_key = "rate_limiter_size"
-        self.head_key = "rate_limiter_head"
-        self.tail_key = "rate_limiter_tail"
+        self.key = key
 
-    def delete_nodes(self, new_post_time):
-        # Get all nodes from Redis and delete expired nodes
-        head_node = self.redis.hgetall(self.head_key)
-        if not head_node:
-            return
+    def allowed(self):
+        """
+        Check if the current request is allowed based on the rate-limiting rules.
 
-        current_node = pickle.loads(head_node)
-        while current_node and (new_post_time - current_node.value).total_seconds() > self.seconds:
-            current_node = current_node.next
+        :return: True if the request is allowed, False otherwise.
+        """
 
-        # Update the head node in Redis
-        self.redis.hset(self.head_key, "value", pickle.dumps(current_node))
+        current_time = datetime.datetime.now().timestamp()
+        # Define the time window
+        time_window_start = current_time - self.seconds
 
-    def allowed(self, current_time):
-        # Retrieve the current head and tail nodes from Redis
-        head_node = self.redis.hgetall(self.head_key)
-        tail_node = self.redis.hgetall(self.tail_key)
+        # Remove outdated requests from the Redis sorted set
+        self.redis_client.zremrangebyscore(self.key, "-inf", time_window_start)
 
-        head = None
-        tail = None
+        # Get the count of requests within the time window
+        request_count = self.redis_client.zcard(self.key)
 
-        if head_node:
-            head = pickle.loads(head_node)
-        if tail_node:
-            tail = pickle.loads(tail_node)
+        if request_count < self.max_posts:
+            # Add the current request timestamp to the sorted set
+            self.redis_client.zadd(self.key, {current_time: current_time})
 
-        if not head:
-            head = Node(current_time)
-            self.redis.hset(self.head_key, "value", pickle.dumps(head))
-            self.redis.set(self.size_key, 1)
-            self.redis.hset(self.tail_key, "value", pickle.dumps(head))
-            return True
+            # Optionally set an expiry for the key to optimize memory usage
+            self.redis_client.expire(self.key, self.seconds)
 
-        self.delete_nodes(current_time)
-
-        # Retrieve current size
-        size = int(self.redis.get(self.size_key) or 0)
-
-        if size < self.max_posts:
-            # Add new node to the list and update the tail
-            new_node = Node(current_time)
-            tail.next = new_node
-            self.redis.hset(self.tail_key, "value", pickle.dumps(new_node))
-            self.redis.incr(self.size_key)
             return True
 
         return False
 
-class PostRequest(BaseModel):
-    time: datetime.datetime
 
 
 # Create an instance of RateLimiter
-rate_limiter = RateLimiter(max_posts=2, seconds=4, redis_client=r)
+rate_limiter = RateLimiterRedis(max_posts=2, seconds=4, redis_client=r)
 
 @app.post("/rate_limit")
-async def rate_limit(post_request: PostRequest):
-    current_time = post_request.time
+async def rate_limit():
 
-    if rate_limiter.allowed(current_time):
+    if rate_limiter.allowed():
         return {"allowed": True}
     else:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
@@ -104,3 +71,4 @@ async def rate_limit(post_request: PostRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+    

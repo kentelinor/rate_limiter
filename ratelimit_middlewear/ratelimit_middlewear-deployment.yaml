@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fastapi-app
+  labels:
+    app: fastapi-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: fastapi-app
+  template:
+    metadata:
+      labels:
+        app: fastapi-app
+    spec:
+      containers:
+      - name: fastapi-app
+        image: kentelinor/ratelimit_middlewear:latest  # Replace with your FastAPI Docker image
+        ports:
+        - containerPort: 8000
+        command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+        env:
+        - name: REDIS_HOST
+          value: "redis"  # Service name of Redis in Kubernetes
+        - name: REDIS_PORT
+          value: "6379"
